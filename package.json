@@ -1,0 +1,35 @@
+{
+  "name": "llm-response-parser",
+  "version": "1.0.0",
+  "description": "Universal LLM response parser — normalize any provider's response into a consistent format.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "llm-parse": "./bin/cli.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./stream": "./src/stream.js",
+    "./providers": "./src/providers.js"
+  },
+  "scripts": {
+    "test": "node --test src/**/*.test.js",
+    "lint": "node --check src/**/*.js"
+  },
+  "keywords": [
+    "llm",
+    "response-parser",
+    "openai",
+    "anthropic",
+    "mimo",
+    "deepseek",
+    "streaming",
+    "tool-calling",
+    "normalizer",
+    "zero-deps"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
