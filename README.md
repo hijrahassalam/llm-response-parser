@@ -13,11 +13,11 @@ A zero-dependency library for parsing, normalizing, and extracting data from LLM
 
 ## ⚠️ Real-World Pitfall
 
-> **MiMo v2.5-pro silently swallowed 50,000 thinking tokens because my parser checked `message.content` instead of `reasoning_content`.**
+> **MiMo silently swallowed 50,000 thinking tokens. OpenAI returned tool calls in a field Anthropic doesn't have. DeepSeek hid reasoning behind a field name that changes every release. Three production outages, one fix.**
 >
-> A production agent powered by MiMo was returning empty responses 30% of the time. No errors, no crashes. The model was spending all its tokens on internal reasoning, and my parser was looking in the wrong field. By the time I found the bug, the agent had wasted 2 million tokens on invisible thinking.
+> A production agent powered by MiMo v2.5-pro was returning empty responses 30% of the time. The model was spending all its tokens on internal reasoning in a field my parser wasn't checking. Meanwhile, an Anthropic integration broke because tool calls live in `content[]`, not `message.tool_calls`. And DeepSeek Reasoner introduced `reasoning_tokens` in one version, then moved it in the next.
 >
-> MiMo, DeepSeek, Anthropic, and OpenAI all return the same data in completely different structures. This library normalizes all of them into one consistent format.
+> Same data, completely different structures across MiMo, OpenAI, Anthropic, and DeepSeek. This library normalizes all of them into one consistent format.
 
 ---
 
@@ -25,11 +25,10 @@ A zero-dependency library for parsing, normalizing, and extracting data from LLM
 
 - **Universal Parser** — One function parses MiMo, OpenAI, Anthropic, DeepSeek, MiniMax, OpenRouter, and custom providers
 - **MiMo Thinking Token Extraction** — Handles MiMo v2.5-pro reasoning_content field that other parsers miss
-- **Tool Call Normalization** — Extracts tool_calls regardless of provider format (OpenAI message.tool_calls vs Anthropic content[] blocks)
-- **Token Usage Normalization** — Consistent { input, output, total, reasoning } across all providers including MiMo hidden reasoning tokens
-- **Streaming Support** — Parse SSE streams from MiMo, OpenAI, DeepSeek with consistent chunk format
-- **Finish Reason Mapping** — Normalize stop, tool_calls, length, content_filter across providers
-- **Error Detection** — Catches rate limits, content filters, and provider-specific errors
+- **OpenAI Tool Call Normalization** — Extracts tool_calls from message.tool_calls (OpenAI, MiMo, DeepSeek, MiniMax)
+- **Anthropic Content Block Parsing** — Handles Anthropic's unique content[] array with tool_use blocks
+- **Token Usage Normalization** — Consistent { input, output, total, reasoning } across all providers including hidden thinking tokens
+- **Streaming Support** — Parse SSE streams from MiMo, OpenAI, Anthropic, DeepSeek with consistent chunk format
 - **Provider Auto-Detection** — Identify provider from response shape when not specified
 - **Zero Dependencies** — Pure ESM, Node.js 18+, nothing extra
 
@@ -43,44 +42,40 @@ A zero-dependency library for parsing, normalizing, and extracting data from LLM
 npm install llm-response-parser
 ```
 
-### 2. Parse MiMo Responses
+### 2. Parse Any Response
 
 ```javascript
 import { parseResponse } from 'llm-response-parser';
 
-// Parse MiMo v2.5-pro response (with thinking tokens)
+// Works with MiMo
 const mimoRes = await fetch('https://token-plan-sgp.xiaomimimo.com/v1/chat/completions', {
   method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${process.env.MIMO_API_KEY}`,
-  },
-  body: JSON.stringify({
-    model: 'mimo-v2.5-pro',
-    messages: [{ role: 'user', content: 'Explain quantum computing' }],
-  }),
+  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${MIMO_KEY}` },
+  body: JSON.stringify({ model: 'mimo-v2.5-pro', messages: [{ role: 'user', content: 'Explain quantum computing' }] }),
 });
-
 const parsed = parseResponse(await mimoRes.json());
 console.log(parsed.content);        // Main response text
 console.log(parsed.thinking);       // MiMo reasoning content (invisible in raw response!)
 console.log(parsed.usage);          // { input: 500, output: 200, total: 700, reasoning: 15000 }
-console.log(parsed.provider);       // "mimo"
+
+// Same code works with OpenAI, Anthropic, DeepSeek, MiniMax, OpenRouter
+const openaiParsed = parseResponse(openaiJson);     // provider: "openai"
+const anthropicParsed = parseResponse(anthropicJson); // provider: "anthropic"
+const deepseekParsed = parseResponse(deepseekJson);   // provider: "deepseek"
+// All return the same normalized format
 ```
 
-### 3. Same Code Works for Any Provider
+### 3. Extract Tool Calls
 
 ```javascript
-// OpenAI
-const parsed = parseResponse(openaiJson);   // provider auto-detected as "openai"
+import { extractToolCalls } from 'llm-response-parser';
 
-// Anthropic
-const parsed = parseResponse(anthropicJson); // provider auto-detected as "anthropic"
-
-// DeepSeek
-const parsed = parseResponse(deepseekJson);  // provider auto-detected as "deepseek"
-
-// All return the same normalized format
+// MiMo/OpenAI: message.tool_calls[].function.{name, arguments}
+// Anthropic: content[].type === "tool_use", .name, .input
+// DeepSeek: same as OpenAI but arguments may be string or object
+// All normalized to:
+const calls = extractToolCalls(response);
+// [{ id: string, name: string, arguments: object }]
 ```
 
 ### 4. CLI
@@ -89,13 +84,13 @@ const parsed = parseResponse(deepseekJson);  // provider auto-detected as "deeps
 # Parse MiMo response
 curl -s https://token-plan-sgp.xiaomimimo.com/v1/chat/completions ... | llm-parse
 
-# Parse with provider hint
-cat response.json | llm-parse --provider mimo
+# Parse any provider with auto-detection
+cat response.json | llm-parse
 
-# Extract thinking tokens only
+# Extract thinking tokens (MiMo, DeepSeek)
 cat response.json | llm-parse --extract thinking
 
-# Show token usage
+# Show token usage breakdown
 cat response.json | llm-parse --extract usage --format table
 ```
 
@@ -110,15 +105,15 @@ cat response.json | llm-parse --extract usage --format table
 │                                                   │
 │  ┌─────────────────────────────────────────────┐ │
 │  │            Provider Detection               │ │
-│  │   (auto-detect MiMo, OpenAI, Anthropic...)  │ │
+│  │  MiMo │ OpenAI │ Anthropic │ DeepSeek │ ... │ │
 │  └────────────────────┬────────────────────────┘ │
 │                       │                           │
 │  ┌────────────────────▼────────────────────────┐ │
 │  │           Normalization Engine              │ │
 │  │                                             │ │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐   │ │
-│  │  │ Content  │ │ Tool     │ │ MiMo     │   │ │
-│  │  │ Extractor│ │ Call     │ │ Thinking │   │ │
+│  │  │ Content  │ │ Tool     │ │ Thinking │   │ │
+│  │  │ Extractor│ │ Call     │ │ Token    │   │ │
 │  │  │          │ │ Normalizer│ │ Extractor│   │ │
 │  │  └──────────┘ └──────────┘ └──────────┘   │ │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐   │ │
@@ -146,6 +141,7 @@ cat response.json | llm-parse
 
 # Provider hint (when auto-detect fails)
 llm-parse response.json --provider mimo
+llm-parse response.json --provider anthropic
 
 # Extract specific fields
 llm-parse response.json --extract content     # Just the text
@@ -170,7 +166,7 @@ Parse any LLM response into a normalized object.
 
 **Parameters:**
 - `raw` — Raw response object from any provider
-- `provider` — Optional provider hint: 'mimo', 'openai', 'anthropic', 'deepseek', 'minimax', 'openrouter'
+- `provider` — Optional: 'mimo', 'openai', 'anthropic', 'deepseek', 'minimax', 'openrouter'
 
 **Returns:**
 
@@ -185,7 +181,7 @@ Parse any LLM response into a normalized object.
     reasoning: number,       // MiMo/DeepSeek thinking tokens (0 if none)
   },
   finishReason: string,      // "stop" | "tool_calls" | "length" | "content_filter" | "error"
-  thinking: string|null,     // MiMo reasoning_content (null if not thinking model)
+  thinking: string|null,     // MiMo/DeepSeek reasoning content (null if not thinking model)
   provider: string,          // Detected or specified provider
   model: string,             // Model identifier
   raw: object,               // Original response for debugging
@@ -197,7 +193,7 @@ Parse any LLM response into a normalized object.
 Extract and normalize tool calls from any provider format.
 
 ```javascript
-// MiMo/OpenAI: message.tool_calls[].function.{name, arguments}
+// MiMo/OpenAI/DeepSeek/MiniMax: message.tool_calls[].function.{name, arguments}
 // Anthropic: content[].type === "tool_use", .name, .input
 // All normalized to:
 [{ id: string, name: string, arguments: object }]
@@ -205,11 +201,13 @@ Extract and normalize tool calls from any provider format.
 
 ### `extractUsage(raw)`
 
-Extract and normalize token usage including MiMo thinking tokens.
+Extract and normalize token usage including MiMo and DeepSeek thinking tokens.
 
 ```javascript
 // MiMo: reasoning_content present but reasoning_tokens may be missing
-// Parser estimates: reasoning_tokens = reasoning_content.length / 4
+// DeepSeek: has explicit reasoning_tokens in usage
+// OpenAI: has completion_tokens_details.reasoning_tokens
+// Anthropic: no thinking token tracking
 // Returns: { input, output, total, reasoning }
 ```
 
@@ -218,10 +216,10 @@ Extract and normalize token usage including MiMo thinking tokens.
 Auto-detect provider from response shape.
 
 ```javascript
-detectProvider(mimoResponse);     // "mimo"    (reasoning_content + mimo model)
-detectProvider(openaiResponse);   // "openai"  (choices[] + message)
+detectProvider(mimoResponse);      // "mimo"     (reasoning_content + mimo model)
+detectProvider(openaiResponse);    // "openai"   (choices[] + message)
 detectProvider(anthropicResponse); // "anthropic" (content[] without choices[])
-detectProvider(deepseekResponse); // "deepseek" (reasoning_content + deepseek model)
+detectProvider(deepseekResponse);  // "deepseek"  (reasoning_content + deepseek model)
 ```
 
 ### `parseStream(chunk, provider?)`
@@ -234,7 +232,7 @@ import { parseStream } from 'llm-response-parser/stream';
 for await (const chunk of response.body) {
   const event = parseStream(chunk);
   if (event.type === 'content') process.stdout.write(event.text);
-  if (event.type === 'thinking') debugLog(event.text);  // MiMo reasoning
+  if (event.type === 'thinking') debugLog(event.text);  // MiMo/DeepSeek reasoning
   if (event.type === 'tool_call') handleTool(event);
   if (event.type === 'done') break;
 }
@@ -291,19 +289,23 @@ const realTokens = parsed.usage.total; // Includes estimated reasoning
 
 ### 2. Anthropic Tool Calls Are in `content[]`, Not `tool_calls`
 
-The biggest source of production bugs. MiMo, OpenAI, DeepSeek, and MiniMax all put tool calls in `message.tool_calls`. Anthropic puts them in `content[]` as items with `type: "tool_use"`. Always use `extractToolCalls()` instead of accessing raw fields.
+MiMo, OpenAI, DeepSeek, and MiniMax all put tool calls in `message.tool_calls`. Anthropic puts them in `content[]` as items with `type: "tool_use"`. If your code checks `message.tool_calls`, it will silently return null for every Anthropic response. Always use `extractToolCalls()`.
 
-### 3. `arguments` Can Be String or Object
+### 3. OpenAI's `reasoning_tokens` Is Nested Deep
 
-MiMo and OpenAI return tool call arguments as a JSON string. Anthropic returns a parsed object. Some providers return empty string for malformed calls. The parser normalizes all to objects and returns `{}` for invalid input.
+OpenAI hides thinking tokens at `usage.completion_tokens_details.reasoning_tokens`. DeepSeek puts them at `usage.reasoning_tokens`. MiMo may not include them at all. The parser extracts all three paths into a single `usage.reasoning` field.
 
-### 4. Streaming Chunks Have No Standard Format
+### 4. `arguments` Can Be String or Object
+
+MiMo, OpenAI, and DeepSeek return tool call arguments as a JSON string. Anthropic returns a parsed object. Some providers return empty string for malformed calls. The parser normalizes all to objects and returns `{}` for invalid input.
+
+### 5. Streaming Chunks Have No Standard Format
 
 MiMo and OpenAI send `data: {"choices":[{"delta":{"content":"Hello"}}]}`. Anthropic sends `event: content_block_delta` with `{"delta":{"text":"Hello"}}`. MiMo may include `reasoning_content` in deltas for thinking models. The stream parser handles all formats.
 
-### 5. `finish_reason` Is Named Differently
+### 6. `finish_reason` Is Named Differently
 
-MiMo/OpenAI use `finish_reason`, Anthropic uses `stop_reason`, some providers omit it entirely. The normalizer maps all to `finishReason` with consistent values.
+MiMo and OpenAI use `finish_reason`, Anthropic uses `stop_reason`, some providers omit it entirely. The normalizer maps all to `finishReason` with consistent values: `stop`, `tool_calls`, `length`, `content_filter`, `error`.
 
 ---
 
